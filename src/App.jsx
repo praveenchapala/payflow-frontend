@@ -6,9 +6,65 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 function App() {
   const [loading, setLoading] = useState(false);
+  const [verifying, setVerifying] = useState(false);
   const [order, setOrder] = useState(null);
   const [error, setError] = useState("");
   const [paymentResponse, setPaymentResponse] = useState(null);
+
+  async function verifyPayment(result) {
+    setVerifying(true);
+    setError("");
+    setPaymentResponse({
+      status: "pending",
+      paymentId: result.razorpay_payment_id,
+    });
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/payments/verify`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            razorpay_order_id: result.razorpay_order_id,
+            razorpay_payment_id: result.razorpay_payment_id,
+            razorpay_signature: result.razorpay_signature,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || data.status !== "verified") {
+        setPaymentResponse({
+          status: "rejected",
+          paymentId: result.razorpay_payment_id,
+          message: data.message || "Payment verification was rejected.",
+        });
+        return;
+      }
+
+      setPaymentResponse({
+        status: "verified",
+        paymentId: data.paymentId,
+        orderId: data.orderId,
+        message: data.message,
+      });
+    } catch (err) {
+      console.error("Verification request failed:", err);
+
+      setPaymentResponse({
+        status: "unknown",
+        paymentId: result.razorpay_payment_id,
+        message:
+          "Could not reach the verification endpoint. The payment status is unknown; check the backend before retrying.",
+      });
+    } finally {
+      setVerifying(false);
+    }
+  }
 
   async function createOrder() {
     setLoading(true);
@@ -17,6 +73,12 @@ function App() {
     setPaymentResponse(null);
 
     try {
+      if (!API_BASE_URL) {
+        throw new Error(
+          "API URL is missing. Check the frontend .env file."
+        );
+      }
+
       if (!window.Razorpay) {
         throw new Error(
           "Razorpay SDK not loaded. Check index.html and refresh the page."
@@ -45,7 +107,8 @@ function App() {
         order_id: data.orderId,
 
         handler: function (result) {
-          setPaymentResponse(result);
+          // Checkout callback is not proof of a verified payment.
+          void verifyPayment(result);
         },
 
         modal: {
@@ -123,9 +186,13 @@ function App() {
         <button
           className="pay-button"
           onClick={createOrder}
-          disabled={loading}
+          disabled={loading || verifying}
         >
-          {loading ? "Opening checkout..." : "Pay ₹499 with Razorpay"}
+          {loading
+            ? "Opening checkout..."
+            : verifying
+              ? "Verifying payment..."
+              : "Pay ₹499 with Razorpay"}
         </button>
 
         {error && (
@@ -143,21 +210,54 @@ function App() {
           </div>
         )}
 
-        {paymentResponse && (
+        {paymentResponse?.status === "pending" && (
           <div className="success-message" role="status">
-            <h3>Checkout response received</h3>
+            <h3>Verifying payment</h3>
             <p>
-              Payment ID: {paymentResponse.razorpay_payment_id}
+              Payment ID: {paymentResponse.paymentId}
+            </p>
+            <p>Waiting for the backend verification result.</p>
+          </div>
+        )}
+
+        {paymentResponse?.status === "verified" && (
+          <div className="success-message" role="status">
+            <h3>Payment signature verified</h3>
+            <p>
+              Payment ID: {paymentResponse.paymentId}
             </p>
             <p>
-              Server verification is pending. This is not yet a
-              verified payment.
+              Order ID: {paymentResponse.orderId}
+            </p>
+            <p>{paymentResponse.message}</p>
+            <p>
+              Note: signature verification does not independently
+              confirm that the payment has been captured.
+            </p>
+          </div>
+        )}
+
+        {paymentResponse?.status === "rejected" && (
+          <div className="error-message" role="alert">
+            <h3>Payment verification rejected</h3>
+            <p>{paymentResponse.message}</p>
+            <p>
+              Payment ID: {paymentResponse.paymentId}
+            </p>
+          </div>
+        )}
+
+        {paymentResponse?.status === "unknown" && (
+          <div className="error-message" role="alert">
+            <h3>Verification status unknown</h3>
+            <p>{paymentResponse.message}</p>
+            <p>
+              Payment ID: {paymentResponse.paymentId}
             </p>
           </div>
         )}
 
         <div className="security-note">
-          <span aria-hidden="true">🔒</span>
           <span>Test mode only. No real payment is intended.</span>
         </div>
 
